@@ -15,16 +15,17 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   UsbPort? _port;
   String _status = "Idle";
-  List<Widget> _ports = [];
   List<Widget> _serialData = [];
 
   StreamSubscription<String>? _subscription;
   Transaction<String>? _transaction;
-  UsbDevice? _device;
+  UsbDeviceDecorator? _device;
 
   TextEditingController _textController = TextEditingController();
+  List<UsbDeviceDecorator> devices = [];
 
-  Future<bool> _connectTo(device) async {
+  Future<bool> _connectTo(UsbDeviceDecorator? device) async {
+    print('Setting DTR: ${device?.dtr}');
     _serialData.clear();
 
     if (_subscription != null) {
@@ -50,7 +51,7 @@ class _MyAppState extends State<MyApp> {
       return true;
     }
 
-    _port = await device.create();
+    _port = await device.device.create();
     if (await (_port!.open()) != true) {
       setState(() {
         _status = "Failed to open port";
@@ -59,11 +60,13 @@ class _MyAppState extends State<MyApp> {
     }
     _device = device;
 
-    await _port!.setDTR(true);
-    await _port!.setRTS(true);
-    await _port!.setPortParameters(115200, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
+    await _port!.setDTR(device.dtr);
+    await _port!.setRTS(device.rts);
+    await _port!
+        .setPortParameters(115200, UsbPort.DATABITS_8, UsbPort.STOPBITS_1, UsbPort.PARITY_NONE);
 
-    _transaction = Transaction.stringTerminated(_port!.inputStream as Stream<Uint8List>, Uint8List.fromList([13, 10]));
+    _transaction = Transaction.stringTerminated(
+        _port!.inputStream as Stream<Uint8List>, Uint8List.fromList([13, 10]));
 
     _subscription = _transaction!.stream.listen((String line) {
       setState(() {
@@ -81,31 +84,22 @@ class _MyAppState extends State<MyApp> {
   }
 
   void _getPorts() async {
-    _ports = [];
-    List<UsbDevice> devices = await UsbSerial.listDevices();
+    List<UsbDevice> usbDevices = await UsbSerial.listDevices();
+    usbDevices.forEach((usbDevice) {
+      devices.add(UsbDeviceDecorator(usbDevice));
+    });
+
+    // todo delete
+    devices.add(UsbDeviceDecorator(
+        UsbDevice('Soter', 234, 234324, 'Soter Name', 'Man name', 2342, 'My Serial', 2)));
+
     if (!devices.contains(_device)) {
       _connectTo(null);
     }
+
     print(devices);
 
-    devices.forEach((device) {
-      _ports.add(ListTile(
-          leading: Icon(Icons.usb),
-          title: Text(device.productName!),
-          subtitle: Text(device.manufacturerName!),
-          trailing: ElevatedButton(
-            child: Text(_device == device ? "Disconnect" : "Connect"),
-            onPressed: () {
-              _connectTo(_device == device ? null : device).then((res) {
-                _getPorts();
-              });
-            },
-          )));
-    });
-
-    setState(() {
-      print(_ports);
-    });
+    setState(() {});
   }
 
   @override
@@ -128,41 +122,110 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-        home: Scaffold(
-      appBar: AppBar(
-        title: const Text('USB Serial Plugin example app'),
-      ),
-      body: Center(
-          child: Column(children: <Widget>[
-        Text(_ports.length > 0 ? "Available Serial Ports" : "No serial devices available", style: Theme.of(context).textTheme.headline6),
-        ..._ports,
-        Text('Status: $_status\n'),
-        Text('info: ${_port.toString()}\n'),
-        ListTile(
-          title: TextField(
-            controller: _textController,
-            decoration: InputDecoration(
-              border: OutlineInputBorder(),
-              labelText: 'Text To Send',
+      home: Scaffold(
+        appBar: AppBar(
+          title: const Text('USB Serial Plugin example app'),
+        ),
+        body: Center(
+            child: Column(children: <Widget>[
+          Text(devices.length > 0 ? "Available Serial Ports" : "No serial devices available",
+              style: Theme.of(context).textTheme.bodyLarge),
+          ...devices
+              .map((mDevice) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                          leading: Icon(Icons.usb),
+                          title: Text(mDevice.device.productName!),
+                          subtitle: Text(mDevice.device.manufacturerName!),
+                          trailing: ElevatedButton(
+                            child: Text(_device == mDevice ? "Disconnect" : "Connect"),
+                            onPressed: () {
+                              _connectTo(_device == mDevice ? null : mDevice).then((res) {
+                                _getPorts();
+                              });
+                            },
+                          )),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Checkbox(
+                                value: mDevice.dtr,
+                                onChanged: (bool? value) {
+                                  if (value != null) mDevice.dtr = value;
+                                  setState(() {});
+                                },
+                              ),
+                              Text('DTR'),
+                            ],
+                          ),
+                          SizedBox(width: 32),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Checkbox(
+                                value: mDevice.rts,
+                                onChanged: (bool? value) {
+                                  if (value != null) mDevice.rts = value;
+                                  setState(() {});
+                                },
+                              ),
+                              Text('RTS'),
+                            ],
+                          )
+                        ],
+                      ),
+                    ],
+                  ))
+              .toList(),
+          Text('Status: $_status\n'),
+          Text('info: ${_port.toString()}\n'),
+          ListTile(
+            title: TextField(
+              controller: _textController,
+              decoration: InputDecoration(
+                border: OutlineInputBorder(),
+                labelText: 'Text To Send',
+              ),
+            ),
+            trailing: ElevatedButton(
+              child: Text("Send"),
+              onPressed: _port == null
+                  ? null
+                  : () async {
+                      if (_port == null) {
+                        return;
+                      }
+                      String data = _textController.text + "\r\n";
+                      await _port!.write(Uint8List.fromList(data.codeUnits));
+                      _textController.text = "";
+                    },
             ),
           ),
-          trailing: ElevatedButton(
-            child: Text("Send"),
-            onPressed: _port == null
-                ? null
-                : () async {
-                    if (_port == null) {
-                      return;
-                    }
-                    String data = _textController.text + "\r\n";
-                    await _port!.write(Uint8List.fromList(data.codeUnits));
-                    _textController.text = "";
-                  },
-          ),
-        ),
-        Text("Result Data", style: Theme.of(context).textTheme.headline6),
-        ..._serialData,
-      ])),
-    ));
+          Text("Result Data", style: Theme.of(context).textTheme.bodyLarge),
+          ..._serialData,
+        ])),
+      ),
+    );
   }
+}
+
+class UsbDeviceDecorator {
+  final UsbDevice device;
+  bool dtr = true;
+  bool rts = true;
+
+  UsbDeviceDecorator(this.device);
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UsbDeviceDecorator && runtimeType == other.runtimeType && device == other.device;
+
+  @override
+  int get hashCode => device.hashCode;
 }
